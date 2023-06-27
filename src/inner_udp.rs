@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::{net::TcpStream, sync::broadcast::Receiver};
-use websocket::receiver;
+use tokio::{net::TcpStream};
 
 use crate::{Conn, ConnBuilderConfig, Protocol, error::ConnectError, ConnNew};
 

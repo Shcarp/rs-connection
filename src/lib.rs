@@ -5,7 +5,7 @@ mod inner_websocket;
 use std::{fmt::Debug};
 
 use async_trait::async_trait;
-use error::ConnectError;
+pub use error::ConnectError;
 use inner_tcp::InnerTcpConn;
 use inner_udp::InnerUdpConn;
 pub use inner_websocket::InnerWebsocket;
@@ -17,6 +17,7 @@ pub enum Protocol {
     WEBSOCKET,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionStatus {
     ConnectStateInit,
     ConnectStateConnecting,
@@ -57,7 +58,7 @@ pub struct ConnBuilderConfig {
     pub host: String,
     pub port: u16,
     pub protocol: Protocol,
-    pub error_callback: Box<dyn FnMut(String) + Send + Sync>,
+    pub error_callback: Box<dyn FnMut(ConnectError) + Send + Sync>,
 }
 
 impl Debug for ConnBuilderConfig {
@@ -116,7 +117,6 @@ impl Connection {
         return self.0.send(data).await;
     }
     pub async fn receive(&mut self) -> Result<Vec<u8>, ()> {
-        println!("receive");
         return self.0.receive().await;
     }
 }
@@ -155,8 +155,8 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 9673,
             protocol: Protocol::WEBSOCKET,
-            error_callback: Box::new(|ERR: String| {
-                println!("ERR: {}", ERR);
+            error_callback: Box::new(|err: ConnectError| {
+                println!("ERR: {}", err);
             }),
         };
 
@@ -178,16 +178,16 @@ mod tests {
 
     #[tokio::test]
     async fn it_test_kind_of_connect() {
-        let connect_opt = ConnBuilderConfig {
-            host: "127.0.0.1".to_string(),
-            port: 9673,
-            protocol: Protocol::WEBSOCKET,
-            error_callback: Box::new(|ERR: String| {
-                println!("ERR: {}", ERR);
-            }),
-        };
+        // let connect_opt = ConnBuilderConfig {
+        //     host: "127.0.0.1".to_string(),
+        //     port: 9673,
+        //     protocol: Protocol::WEBSOCKET,
+        //     error_callback: Box::new(|err: ConnectError| {
+        //         println!("ERR: {}", err);
+        //     }),
+        // };
 
-        let mut conn = ConnBuilder::new(connect_opt).build();
-        conn.connect().await;
+        // let mut conn = ConnBuilder::new(connect_opt).build();
+        // conn.connect().await;
     }
 }

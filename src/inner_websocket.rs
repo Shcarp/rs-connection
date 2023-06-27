@@ -1,5 +1,6 @@
 use crate::{error::ConnectError, Conn, ConnBuilderConfig, ConnNew, ConnectionStatus, Protocol};
 use async_trait::async_trait;
+use log::{error, info};
 use std::{
     fmt::Debug,
     net::TcpStream,
@@ -9,12 +10,12 @@ use std::{
         RwLock,
     },
 };
-use tokio::{sync::{
+use tokio::sync::{
     mpsc::{channel, Receiver, Sender},
     Mutex,
-}};
+};
 use websocket::{
-    sync::{Reader, Writer},
+    sync::{Client as WebsocketClient, Reader, Writer},
     ClientBuilder, OwnedMessage,
 };
 
@@ -33,6 +34,8 @@ pub struct InnerWebsocket {
     recv_sender: Sender<Vec<u8>>,
     recv_receiver: Arc<Mutex<Receiver<Vec<u8>>>>,
     conn_task: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
+
+    error_callback: Arc<Mutex<Box<dyn FnMut(ConnectError) + Send + Sync>>>,
 }
 
 unsafe impl Send for InnerWebsocket {}
@@ -51,6 +54,7 @@ impl Clone for InnerWebsocket {
             conn_task: self.conn_task.clone(),
             recv_sender: self.recv_sender.clone(),
             recv_receiver: self.recv_receiver.clone(),
+            error_callback: self.error_callback.clone(),
         }
     }
 }
@@ -81,26 +85,56 @@ impl InnerWebsocket {
         self.state.load(Ordering::Relaxed)
     }
 
-    async fn error_callback(&mut self, error: String) {
-        // let mut callback = self.error_callback.lock().await;
-        // callback(error);
+    async fn error_callback(&mut self, error: ConnectError) {
+        let mut callback = self.error_callback.lock().await;
+        callback(error);
+    }
+
+    fn do_connect(&mut self) -> Result<WebsocketClient<TcpStream>, ConnectError> {
+        info!("do_connect");
+        let origin_conn = ClientBuilder::new(&format!("ws://{}:{}", self.ip, self.port))
+            .or_else(|err| {
+                self.state.store(
+                    ConnectionStatus::ConnectStateClosed.into(),
+                    Ordering::Relaxed,
+                );
+                Err(ConnectError::ConnectionError(err.to_string()))
+            })?
+            .connect_insecure()
+            .or_else(|err| {
+                self.state.store(
+                    ConnectionStatus::ConnectStateClosed.into(),
+                    Ordering::Relaxed,
+                );
+                Err(ConnectError::ConnectionError(err.to_string()))
+            })?;
+        Ok(origin_conn)
     }
 
     // 开始发送心跳信息
     fn start_heartbeat(&self) {
+        let mut this = self.clone();
         let heartbeat = self.writer.clone().unwrap();
 
         let mut start_time = chrono::Utc::now().timestamp_millis() as u64;
 
         let heartbeat_task = tokio::spawn(async move {
             loop {
-                let mut write = heartbeat.lock().await;
                 let now = chrono::Utc::now().timestamp_millis() as u64;
-                if now - start_time >= HEARTBEAT_INTERVAL {
-                    write.send_message(&websocket::Message::ping(PING)).unwrap();
+                if now - start_time >= HEARTBEAT_INTERVAL
+                    && this.state.load(Ordering::Relaxed)
+                        == ConnectionStatus::ConnectStateConnected as u8
+                {
+                    let mut write = heartbeat.lock().await;
+                    match write.send_message(&websocket::Message::ping(PING)) {
+                        Ok(_) => {}
+                        Err(_error) => {
+                            drop(write);
+                            this.error_help(ConnectError::SendError(String::from("ping error"))).await;
+                        }
+                    };
                     start_time = chrono::Utc::now().timestamp_millis() as u64;
                 }
-                drop(write);
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
         });
@@ -116,14 +150,7 @@ impl InnerWebsocket {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 if now - last_time.load(Ordering::Relaxed) >= HEARTBEAT_INTERVAL + 1000 {
                     // 重连
-                    match this.reconnect().await {
-                        Ok(_) => continue,
-                        Err(_) => {
-                            this.error_callback("Connection already closed".to_owned())
-                                .await;
-                            return;
-                        }
-                    }
+                    this.error_help(ConnectError::ConnectionTimeout).await;
                 }
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
             }
@@ -143,8 +170,8 @@ impl InnerWebsocket {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let task = async {
                 loop {
-                    let message = reader.lock().await.recv_message();
-                    let message = match message {
+                    let recv = reader.lock().await.recv_message();
+                    match recv {
                         Ok(message) => {
                             this.last_heartbeat.store(
                                 chrono::Utc::now().timestamp_millis() as u64,
@@ -152,85 +179,94 @@ impl InnerWebsocket {
                             );
                             match message {
                                 OwnedMessage::Ping(payload) => {
-                                    this.writer
+                                    match this
+                                        .writer
                                         .clone()
                                         .unwrap()
                                         .lock()
                                         .await
                                         .send_message(&websocket::Message::pong(payload))
-                                        .unwrap();
-                                    continue;
+                                    {
+                                        Ok(_) => {}
+                                        Err(_error) => this.error_help(ConnectError::SendError(
+                                            String::from("pong error"),
+                                        )).await,
+                                    };
                                 }
                                 OwnedMessage::Pong(_) => {
                                     continue;
                                 }
                                 OwnedMessage::Text(text) => {
-                                    recv_sender.send(text.into_bytes()).await.unwrap();
+                                    match recv_sender.send(text.into_bytes()).await {
+                                        Ok(_) => continue,
+                                        Err(error) => {
+                                            this.error_help(ConnectError::Unknown(format!(
+                                                "channel error: {}",
+                                                error
+                                            ))).await;
+                                        }
+                                    }
                                 }
                                 OwnedMessage::Binary(binary) => {
-                                    println!("binary: {:?}", binary);
-                                    recv_sender
-                                        .send(binary)
-                                        .await
-                                        .or_else(|err| {
-                                            Err({
-                                                println!("send error");
-                                            })
-                                        })
-                                        .unwrap();
+                                    match recv_sender.send(binary).await {
+                                        Ok(_) => continue,
+                                        Err(error) => {
+                                            this.error_help(ConnectError::Unknown(format!(
+                                                "channel error: {}",
+                                                error
+                                            ))).await;
+                                        }
+                                    }
                                 }
-                                OwnedMessage::Close(_) => {
-                                    this.error_callback("Connection already closed".to_owned())
-                                        .await;
-                                    return;
-                                }
-                                _ => {}
+                                OwnedMessage::Close(error) => match error {
+                                    Some(error) => {
+                                        this.error_help(ConnectError::ConnectionClosed(
+                                            error.reason,
+                                        )).await;
+                                    }
+                                    None => {
+                                        this.error_help(ConnectError::ConnectionClosed(
+                                            "close".to_string(),
+                                        )).await;
+                                    }
+                                },
                             }
                         }
                         Err(_) => {
+                            drop(recv);
+                            info!("连接关闭");
+                            this.error_help(ConnectError::ConnectionClosed("close".to_string())).await;
                         }
                     };
-                    drop(message);
                 }
             };
             rt.block_on(task);
         });
     }
 
-    async fn reconnect(&mut self) -> Result<(), ()> {
-        if (self.get_state() == ConnectionStatus::ConnectStateClosed as u8)
-            || (self.get_state() == ConnectionStatus::ConnectStateClosing as u8)
-            || (self.get_state() == ConnectionStatus::ConnectStateReconnect as u8)
-        {
-            return Ok(());
-        }
+    async fn reconnect(&mut self) -> Result<(), ConnectError> {
+       info!("start reconnect");
         let mut count = 0;
-        self.state.store(
-            ConnectionStatus::ConnectStateReconnect as u8,
-            Ordering::Relaxed,
-        );
         loop {
-            self.conn_task.write().unwrap().clear();
-            std::thread::sleep(std::time::Duration::from_secs(10));
-            let (reader, writer) =
-                match ClientBuilder::new(&format!("ws://{}:{}", self.ip, self.port))
-                    .unwrap()
-                    .connect_insecure()
-                {
-                    Ok(conn) => conn.split().unwrap(),
-                    Err(error) => {
-                        println!("连接失败: {}", error);
-                        count += 1;
-                        if count >= 10 {
-                            self.state.store(
-                                ConnectionStatus::ConnectStateClosing.into(),
-                                Ordering::Relaxed,
-                            );
-                            return Err(());
-                        }
-                        continue;
+            let (reader, writer) = match self.do_connect() {
+                Ok(conn) => conn.split().or_else(|error| {
+                    info!("reconnect error: {:?}", error);
+                    Err(error)
+                })?,
+                Err(_error) => {
+                    info!("reconnect count: {}", 10 - count);
+                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    count += 1;
+                    if count >= 10 {
+                        self.state.store(
+                            ConnectionStatus::ConnectStateClosing.into(),
+                            Ordering::Relaxed,
+                        );
+                        return Err(ConnectError::ReconnectFailed);
                     }
-                };
+                    continue;
+                }
+            };
 
             let mut reader_guard = self.reader.as_mut().unwrap().lock().await;
             let mut writer_guard = self.writer.as_mut().unwrap().lock().await;
@@ -248,6 +284,49 @@ impl InnerWebsocket {
             return Ok(());
         }
     }
+
+    async fn close(&mut self, error: ConnectError) {
+        self.state.store(
+            ConnectionStatus::ConnectStateClosing.into(),
+            Ordering::Relaxed,
+        );
+        self.conn_task.write().unwrap().clear();
+        let mut this = self.clone();
+        error!("error: {:?}", error);
+        this.error_callback(error).await;
+        self.state.store(
+            ConnectionStatus::ConnectStateClosed.into(),
+            Ordering::Relaxed,
+        );
+    }
+
+    async fn error_help(&mut self, error: ConnectError) {
+        let state = ConnectionStatus::from(self.get_state());
+        // 判断是否是重连
+        if state == ConnectionStatus::ConnectStateReconnect
+            && state == ConnectionStatus::ConnectStateClosing
+            && state == ConnectionStatus::ConnectStateClosed
+        {
+            return;
+        }
+        // 如果是已连接，则重连
+        if self.get_state() == ConnectionStatus::ConnectStateConnected as u8 {
+            self.state.store(
+                ConnectionStatus::ConnectStateReconnect as u8,
+                Ordering::Relaxed,
+            );
+    
+            let mut this = self.clone();
+            match this.reconnect().await {
+                Ok(_) => {
+                    info!("reconnect success");
+                }
+                Err(_) => {
+                    this.close(error).await;
+                }
+            }
+        }
+    }
 }
 
 impl ConnNew for InnerWebsocket {
@@ -262,9 +341,9 @@ impl ConnNew for InnerWebsocket {
             writer: None,
             last_heartbeat: Arc::new(AtomicU64::new(0)),
             conn_task: Arc::new(RwLock::new(Vec::new())),
-            // error_callback: Arc::new(Mutex::new(target.error_callback)),
             recv_sender: sender,
             recv_receiver: Arc::new(Mutex::new(receiver)),
+            error_callback: Arc::new(Mutex::new(target.error_callback)),
         }
     }
 }
@@ -284,24 +363,8 @@ impl Conn for InnerWebsocket {
             ConnectionStatus::ConnectStateConnecting.into(),
             Ordering::Relaxed,
         );
-        let origin_conn = ClientBuilder::new(&format!("ws://{}:{}", self.ip, self.port))
-            .or_else(|err| {
-                self.state.store(
-                    ConnectionStatus::ConnectStateClosed.into(),
-                    Ordering::Relaxed,
-                );
-                Err(ConnectError::ConnectionError(err.to_string()))
-            })?
-            .connect_insecure()
-            .or_else(|err| {
-                self.state.store(
-                    ConnectionStatus::ConnectStateClosed.into(),
-                    Ordering::Relaxed,
-                );
-                Err(ConnectError::ConnectionError(err.to_string()))
-            })?;
-
-        let (reader, writer) = origin_conn
+        let origin_conn = self.do_connect();
+        let (reader, writer) = origin_conn?
             .split()
             .or_else(|err| Err(ConnectError::ConnectionError(err.to_string())))?;
         let reader = Arc::new(Mutex::new(reader));
@@ -356,35 +419,16 @@ impl Conn for InnerWebsocket {
     async fn send(&mut self, data: &[u8]) -> Result<bool, ConnectError> {
         if let Some(writer) = self.writer.as_mut() {
             let mut send = writer.lock().await;
+
             match send.send_message(&websocket::Message::binary(data)) {
                 Ok(_) => return Ok(true),
                 Err(err) => {
                     drop(send);
-                    if self.get_state() == ConnectionStatus::ConnectStateConnected.into() {
-                        // 重连
-                        match self.reconnect().await {
-                            Ok(_) => match self.send(data).await {
-                                Ok(_) => return Ok(true),
-                                Err(_) => {
-                                    return Err(ConnectError::SendError(
-                                        "重连后发送失败".to_string(),
-                                    ));
-                                }
-                            },
-                            Err(_) => {
-                                self.state.store(
-                                    ConnectionStatus::ConnectStateClosed.into(),
-                                    Ordering::Relaxed,
-                                );
-                                return Err(ConnectError::SendError("重连失败".to_string()));
-                            }
-                        }
-                    }
-                    return Err(ConnectError::SendError(err.to_string()));
+                    self.error_help(ConnectError::SendError(err.to_string())).await;
                 }
             }
         }
-        Err(ConnectError::SendError("发送失败".to_string()))
+        Err(ConnectError::SendError("send error".to_string()))
     }
 
     async fn receive(&mut self) -> Result<Vec<u8>, ()> {

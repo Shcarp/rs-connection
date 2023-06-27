@@ -1,4 +1,4 @@
-use conn::{ConnBuilderConfig, Protocol, ConnBuilder};
+use conn::{ConnBuilderConfig, Protocol, ConnBuilder, ConnectError};
 
 #[tokio::main]
 async fn main() {
@@ -6,7 +6,7 @@ async fn main() {
         host: "127.0.0.1".to_string(),
         port: 9673,
         protocol: Protocol::WEBSOCKET,
-        error_callback: Box::new(|ERR: String| {
+        error_callback: Box::new(|ERR: ConnectError| {
             println!("ERR: {}", ERR);
         }),
     };
