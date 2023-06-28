@@ -254,10 +254,10 @@ impl InnerWebsocket {
                     Err(error)
                 })?,
                 Err(_error) => {
-                    info!("reconnect count: {}", 10 - count);
-                    std::thread::sleep(std::time::Duration::from_secs(10));
+                    info!("reconnect count: {}", 100 - count);
+                    std::thread::sleep(std::time::Duration::from_secs(3));
                     count += 1;
-                    if count >= 10 {
+                    if count >= 100 {
                         self.state.store(
                             ConnectionStatus::ConnectStateClosing.into(),
                             Ordering::Relaxed,
