@@ -236,6 +236,7 @@ impl InnerWebsocket {
                             drop(recv);
                             info!("连接关闭");
                             this.error_help(ConnectError::ConnectionClosed("close".to_string())).await;
+                            break;
                         }
                     };
                 }
