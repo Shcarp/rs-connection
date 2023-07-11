@@ -188,19 +188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "conn"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "log 0.4.19",
- "thiserror",
- "tokio",
- "tokio-test",
- "websocket",
-]
-
-[[package]]
 name = "core-foundation"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -896,6 +883,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "567664f262709473930a4bf9e51bf2ebf3348f2e748ccc50dea20646858f8f29"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "rs-connections"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "log 0.4.19",
+ "thiserror",
+ "tokio",
+ "tokio-test",
+ "websocket",
 ]
 
 [[package]]
