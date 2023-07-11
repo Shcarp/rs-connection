@@ -1,4 +1,4 @@
-use conn::{ConnBuilderConfig, Protocol, ConnBuilder, ConnectError};
+use rs_connections::{ConnBuilderConfig, Protocol, ConnBuilder, ConnectError};
 
 #[tokio::main]
 async fn main() {
