@@ -3,7 +3,7 @@ name = "rs-connections"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-metadata = { "description" = "A library for initiate connections" }
+description = "A brief description of your package"
 
 [dependencies]
 websocket = "0.26.5"
