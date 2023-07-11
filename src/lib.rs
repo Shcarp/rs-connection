@@ -54,11 +54,28 @@ impl Into<u8> for ConnectionStatus {
     }
 }
 
+pub const HEARTBEAT_INTERVAL: u64 = 10 * 1000;
+
 pub struct ConnBuilderConfig {
     pub host: String,
     pub port: u16,
     pub protocol: Protocol,
+    pub heartbeat_time: Option<u64>,
     pub error_callback: Box<dyn FnMut(ConnectError) + Send + Sync>,
+}
+
+impl Default for ConnBuilderConfig  {
+    fn default() -> Self {
+        ConnBuilderConfig {
+            host: "127.0.0.1".to_owned(),
+            port: 9673,
+            protocol: Protocol::WEBSOCKET,
+            heartbeat_time: Some(HEARTBEAT_INTERVAL),
+            error_callback: Box::new(|err: ConnectError| {
+                println!("ERR: {}", err);
+            })
+        }
+    }
 }
 
 impl Debug for ConnBuilderConfig {
@@ -76,10 +93,6 @@ impl Default for Protocol {
     }
 }
 
-pub trait ConnNew {
-    fn new(config: ConnBuilderConfig) -> Self;
-}
-
 #[async_trait]
 pub trait Conn: Send + Sync {
     fn get_address(&self) -> String;
@@ -88,6 +101,10 @@ pub trait Conn: Send + Sync {
     async fn disconnect(&mut self) -> Result<bool, ConnectError>;
     async fn send(&mut self, data: &[u8]) -> Result<bool, ConnectError>;
     async fn receive(&mut self) -> Result<Vec<u8>, ()>;
+}
+
+pub trait ConnNew {
+    fn new(config: ConnBuilderConfig) -> Self;
 }
 
 pub trait ConnectionTrait: ConnNew + Sync + Send + Clone {}
@@ -154,6 +171,7 @@ mod tests {
         let connect_opt = ConnBuilderConfig {
             host: "127.0.0.1".to_string(),
             port: 9673,
+            heartbeat_time: Some(HEARTBEAT_INTERVAL),
             protocol: Protocol::WEBSOCKET,
             error_callback: Box::new(|err: ConnectError| {
                 println!("ERR: {}", err);

@@ -5,6 +5,7 @@ async fn main() {
     let connect_opt = ConnBuilderConfig {
         host: "127.0.0.1".to_string(),
         port: 9673,
+        heartbeat_time: Some(10000),
         protocol: Protocol::WEBSOCKET,
         error_callback: Box::new(|ERR: ConnectError| {
             println!("ERR: {}", ERR);

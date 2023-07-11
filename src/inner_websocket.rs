@@ -1,4 +1,4 @@
-use crate::{error::ConnectError, Conn, ConnBuilderConfig, ConnNew, ConnectionStatus, Protocol};
+use crate::{error::ConnectError, Conn, ConnBuilderConfig, ConnNew, ConnectionStatus, Protocol, HEARTBEAT_INTERVAL};
 use async_trait::async_trait;
 use log::{error, info};
 use std::{
@@ -19,14 +19,13 @@ use websocket::{
     ClientBuilder, OwnedMessage,
 };
 
-const HEARTBEAT_INTERVAL: u64 = 10 * 1000;
-
 const PING: &[u8] = b"ping";
 
 pub struct InnerWebsocket {
     pub ip: String,
     pub port: u16,
     pub protocol: Protocol,
+    heartbeat_time: u64,
     state: Arc<AtomicU8>,
     reader: Option<Arc<Mutex<Reader<TcpStream>>>>,
     writer: Option<Arc<Mutex<Writer<TcpStream>>>>,
@@ -34,7 +33,6 @@ pub struct InnerWebsocket {
     recv_sender: Sender<Vec<u8>>,
     recv_receiver: Arc<Mutex<Receiver<Vec<u8>>>>,
     conn_task: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
-
     error_callback: Arc<Mutex<Box<dyn FnMut(ConnectError) + Send + Sync>>>,
 }
 
@@ -47,6 +45,7 @@ impl Clone for InnerWebsocket {
             ip: self.ip.clone(),
             port: self.port.clone(),
             protocol: self.protocol.clone(),
+            heartbeat_time: self.heartbeat_time.clone(),
             state: self.state.clone(),
             reader: self.reader.clone(),
             writer: self.writer.clone(),
@@ -121,7 +120,7 @@ impl InnerWebsocket {
         let heartbeat_task = tokio::spawn(async move {
             loop {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
-                if now - start_time >= HEARTBEAT_INTERVAL
+                if now - start_time >= this.heartbeat_time
                     && this.state.load(Ordering::Relaxed)
                         == ConnectionStatus::ConnectStateConnected as u8
                 {
@@ -148,7 +147,7 @@ impl InnerWebsocket {
         let check_task = tokio::spawn(async move {
             loop {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
-                if now - last_time.load(Ordering::Relaxed) >= HEARTBEAT_INTERVAL + 1000 {
+                if now - last_time.load(Ordering::Relaxed) >= this.heartbeat_time + 1000 {
                     // 重连
                     this.error_help(ConnectError::ConnectionTimeout).await;
                 }
@@ -333,9 +332,16 @@ impl InnerWebsocket {
 impl ConnNew for InnerWebsocket {
     fn new(target: ConnBuilderConfig) -> Self {
         let (sender, receiver) = channel::<Vec<u8>>(20);
+
+        let heartbeat_time = match target.heartbeat_time {
+            Some(time) => time,
+            None => HEARTBEAT_INTERVAL,
+        };
+
         InnerWebsocket {
             ip: target.host,
             port: target.port,
+            heartbeat_time: heartbeat_time,
             protocol: Protocol::WEBSOCKET,
             state: Arc::new(AtomicU8::new(ConnectionStatus::ConnectStateInit.into())),
             reader: None,
