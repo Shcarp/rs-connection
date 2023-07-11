@@ -1,6 +1,6 @@
 ### Connections
 #### Description
-This crate is used to create a connection to a server. It can be used to create a connection to a server using the TCP or WebSocket protocol. The connection is created using the tokio library.
+This crate is used to create a connection to a server. It can be used to create a connection to a server using the TCP or WebSocket protocol. The connection is created using the tokio library. (TCP and UDP is not supported yet)
 #### Example
 ```
 use conn::{ConnBuilderConfig, Protocol, ConnBuilder};
