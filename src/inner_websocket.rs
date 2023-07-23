@@ -1,4 +1,8 @@
-use crate::{error::ConnectError, Conn, ConnBuilderConfig, ConnNew, ConnectionStatus, Protocol, HEARTBEAT_INTERVAL};
+use crate::{
+    error::ConnectError, ConnBuilderConfig, ConnNew, ConnectionBaseInterface, ConnectionInterface,
+    ConnectionStatus, Emitter, Protocol, CLOSE_EVENT, CONNECTED_EVENT, CONNECTING_EVENT,
+    DISCONNECT_EVENT, ERROR_EVENT, HEARTBEAT_INTERVAL, RECONNECT_EVENT, MESSAGE_EVENT,
+};
 use async_trait::async_trait;
 use log::{error, info};
 use std::{
@@ -19,12 +23,15 @@ use websocket::{
     ClientBuilder, OwnedMessage,
 };
 
+use rs_event_emitter::{EventEmitter, Handle};
+
 const PING: &[u8] = b"ping";
 
 pub struct InnerWebsocket {
     pub ip: String,
     pub port: u16,
     pub protocol: Protocol,
+    emitter: EventEmitter,
     heartbeat_time: u64,
     state: Arc<AtomicU8>,
     reader: Option<Arc<Mutex<Reader<TcpStream>>>>,
@@ -33,7 +40,6 @@ pub struct InnerWebsocket {
     recv_sender: Sender<Vec<u8>>,
     recv_receiver: Arc<Mutex<Receiver<Vec<u8>>>>,
     conn_task: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
-    error_callback: Arc<Mutex<Box<dyn FnMut(ConnectError) + Send + Sync>>>,
 }
 
 unsafe impl Send for InnerWebsocket {}
@@ -45,6 +51,7 @@ impl Clone for InnerWebsocket {
             ip: self.ip.clone(),
             port: self.port.clone(),
             protocol: self.protocol.clone(),
+            emitter: self.emitter.clone(),
             heartbeat_time: self.heartbeat_time.clone(),
             state: self.state.clone(),
             reader: self.reader.clone(),
@@ -53,7 +60,6 @@ impl Clone for InnerWebsocket {
             conn_task: self.conn_task.clone(),
             recv_sender: self.recv_sender.clone(),
             recv_receiver: self.recv_receiver.clone(),
-            error_callback: self.error_callback.clone(),
         }
     }
 }
@@ -85,8 +91,7 @@ impl InnerWebsocket {
     }
 
     async fn error_callback(&mut self, error: ConnectError) {
-        let mut callback = self.error_callback.lock().await;
-        callback(error);
+        self.emit(ERROR_EVENT, format!("{}", error));
     }
 
     fn do_connect(&mut self) -> Result<WebsocketClient<TcpStream>, ConnectError> {
@@ -126,10 +131,13 @@ impl InnerWebsocket {
                 {
                     let mut write = heartbeat.lock().await;
                     match write.send_message(&websocket::Message::ping(PING)) {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            log::info!("ping");
+                        }
                         Err(_error) => {
                             drop(write);
-                            this.error_help(ConnectError::SendError(String::from("ping error"))).await;
+                            this.error_help(ConnectError::SendError(String::from("ping error")))
+                                .await;
                         }
                     };
                     start_time = chrono::Utc::now().timestamp_millis() as u64;
@@ -187,33 +195,40 @@ impl InnerWebsocket {
                                         .send_message(&websocket::Message::pong(payload))
                                     {
                                         Ok(_) => {}
-                                        Err(_error) => this.error_help(ConnectError::SendError(
-                                            String::from("pong error"),
-                                        )).await,
+                                        Err(_error) => {
+                                            this.error_help(ConnectError::SendError(String::from(
+                                                "pong error",
+                                            )))
+                                            .await
+                                        }
                                     };
                                 }
                                 OwnedMessage::Pong(_) => {
                                     continue;
                                 }
                                 OwnedMessage::Text(text) => {
+                                    this.emit(MESSAGE_EVENT, text.clone());
                                     match recv_sender.send(text.into_bytes()).await {
                                         Ok(_) => continue,
                                         Err(error) => {
                                             this.error_help(ConnectError::Unknown(format!(
                                                 "channel error: {}",
                                                 error
-                                            ))).await;
+                                            )))
+                                            .await;
                                         }
                                     }
                                 }
                                 OwnedMessage::Binary(binary) => {
+                                    this.emit(MESSAGE_EVENT, binary.clone());
                                     match recv_sender.send(binary).await {
                                         Ok(_) => continue,
                                         Err(error) => {
                                             this.error_help(ConnectError::Unknown(format!(
                                                 "channel error: {}",
                                                 error
-                                            ))).await;
+                                            )))
+                                            .await;
                                         }
                                     }
                                 }
@@ -221,20 +236,22 @@ impl InnerWebsocket {
                                     Some(error) => {
                                         this.error_help(ConnectError::ConnectionClosed(
                                             error.reason,
-                                        )).await;
+                                        ))
+                                        .await;
                                     }
                                     None => {
                                         this.error_help(ConnectError::ConnectionClosed(
                                             "close".to_string(),
-                                        )).await;
+                                        ))
+                                        .await;
                                     }
                                 },
                             }
                         }
                         Err(_) => {
                             drop(recv);
-                            info!("连接关闭");
-                            this.error_help(ConnectError::ConnectionClosed("close".to_string())).await;
+                            this.error_help(ConnectError::ConnectionClosed("close".to_string()))
+                                .await;
                             break;
                         }
                     };
@@ -245,16 +262,19 @@ impl InnerWebsocket {
     }
 
     async fn reconnect(&mut self) -> Result<(), ConnectError> {
-       info!("start reconnect");
+        info!("start reconnect");
         let mut count = 0;
         loop {
             let (reader, writer) = match self.do_connect() {
                 Ok(conn) => conn.split().or_else(|error| {
                     info!("reconnect error: {:?}", error);
+                    self.emit(CLOSE_EVENT, format!("reconnect error: {:?}", error));
                     Err(error)
                 })?,
                 Err(_error) => {
-                    info!("reconnect count: {}", 100 - count);
+                    let reconnect_info = format!("reconnect error: {:?}", _error);
+                    info!("{}", reconnect_info.clone());
+                    self.emit(RECONNECT_EVENT, reconnect_info);
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     count += 1;
                     if count >= 100 {
@@ -315,11 +335,12 @@ impl InnerWebsocket {
                 ConnectionStatus::ConnectStateReconnect as u8,
                 Ordering::Relaxed,
             );
-    
+
             let mut this = self.clone();
             match this.reconnect().await {
                 Ok(_) => {
                     info!("reconnect success");
+                    self.emit(CONNECTED_EVENT, "connected");
                 }
                 Err(_) => {
                     this.close(error).await;
@@ -342,6 +363,7 @@ impl ConnNew for InnerWebsocket {
             ip: target.host,
             port: target.port,
             heartbeat_time: heartbeat_time,
+            emitter: EventEmitter::new(),
             protocol: Protocol::WEBSOCKET,
             state: Arc::new(AtomicU8::new(ConnectionStatus::ConnectStateInit.into())),
             reader: None,
@@ -350,22 +372,14 @@ impl ConnNew for InnerWebsocket {
             conn_task: Arc::new(RwLock::new(Vec::new())),
             recv_sender: sender,
             recv_receiver: Arc::new(Mutex::new(receiver)),
-            error_callback: Arc::new(Mutex::new(target.error_callback)),
         }
     }
 }
 
 #[async_trait]
-impl Conn for InnerWebsocket {
-    fn clone_box(&self) -> Box<dyn Conn> {
-        Box::new(self.clone())
-    }
-
-    fn get_address(&self) -> String {
-        return format!("{}:{}", self.ip, self.port);
-    }
-
+impl ConnectionInterface for InnerWebsocket {
     async fn connect(&mut self) -> Result<bool, ConnectError> {
+        self.emit(CONNECTING_EVENT, "connecting");
         self.state.store(
             ConnectionStatus::ConnectStateConnecting.into(),
             Ordering::Relaxed,
@@ -389,6 +403,8 @@ impl Conn for InnerWebsocket {
         self.check_close();
         self.start_recv();
 
+        self.emit(CONNECTED_EVENT, "connected");
+
         self.state.swap(
             ConnectionStatus::ConnectStateConnected.into(),
             Ordering::Relaxed,
@@ -397,6 +413,7 @@ impl Conn for InnerWebsocket {
     }
 
     async fn disconnect(&mut self) -> Result<bool, ConnectError> {
+        self.emit(DISCONNECT_EVENT, "CONNECT CLOSE");
         self.state.store(
             ConnectionStatus::ConnectStateClosing.into(),
             Ordering::Relaxed,
@@ -414,6 +431,7 @@ impl Conn for InnerWebsocket {
                     ConnectionStatus::ConnectStateClosed.into(),
                     Ordering::Relaxed,
                 );
+
                 Ok(true)
             }
             Err(err) => {
@@ -431,7 +449,8 @@ impl Conn for InnerWebsocket {
                 Ok(_) => return Ok(true),
                 Err(err) => {
                     drop(send);
-                    self.error_help(ConnectError::SendError(err.to_string())).await;
+                    self.error_help(ConnectError::SendError(err.to_string()))
+                        .await;
                 }
             }
         }
@@ -448,5 +467,25 @@ impl Conn for InnerWebsocket {
                 return Ok(Vec::new());
             }
         };
+    }
+}
+
+impl Emitter for InnerWebsocket {
+    fn emit<T: Clone + 'static + Debug>(&mut self, event: &'static str, data: T) -> () {
+        self.emitter.emit(event, data);
+    }
+
+    fn on(&mut self, event: &'static str, callback: impl Handle + 'static) -> () {
+        self.emitter.on(event, callback);
+    }
+
+    fn off(&mut self, event: &'static str, callback: &(impl Handle + 'static)) -> () {
+        self.emitter.off(event, callback);
+    }
+}
+
+impl ConnectionBaseInterface for InnerWebsocket {
+    fn get_address(&self) -> String {
+        return format!("{}:{}", self.ip, self.port);
     }
 }

@@ -2,12 +2,10 @@ mod error;
 mod inner_tcp;
 mod inner_udp;
 mod inner_websocket;
-use std::{fmt::Debug};
-
+use std::fmt::Debug;
 use async_trait::async_trait;
+pub use rs_event_emitter::{EventHandler, Handle};
 pub use error::ConnectError;
-use inner_tcp::InnerTcpConn;
-use inner_udp::InnerUdpConn;
 pub use inner_websocket::InnerWebsocket;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +59,7 @@ pub struct ConnBuilderConfig {
     pub port: u16,
     pub protocol: Protocol,
     pub heartbeat_time: Option<u64>,
-    pub error_callback: Box<dyn FnMut(ConnectError) + Send + Sync>,
+    // pub error_callback: Box<dyn FnMut(ConnectError) + Send + Sync>,
 }
 
 impl Default for ConnBuilderConfig  {
@@ -71,9 +69,9 @@ impl Default for ConnBuilderConfig  {
             port: 9673,
             protocol: Protocol::WEBSOCKET,
             heartbeat_time: Some(HEARTBEAT_INTERVAL),
-            error_callback: Box::new(|err: ConnectError| {
-                println!("ERR: {}", err);
-            })
+            // error_callback: Box::new(|err: ConnectError| {
+            //     println!("ERR: {}", err);
+            // })
         }
     }
 }
@@ -89,18 +87,36 @@ impl Debug for ConnBuilderConfig {
 
 impl Default for Protocol {
     fn default() -> Self {
-        Protocol::TCP
+        Protocol::WEBSOCKET
     }
 }
 
+pub static CONNECTING_EVENT: &str = "connecting";
+pub static CONNECTED_EVENT: &str = "connected";
+pub static CLOSE_EVENT: &str = "close";
+pub static DISCONNECT_EVENT: &str = "disconnect";
+pub static ERROR_EVENT: &str = "error";
+pub static MESSAGE_EVENT: &str = "message";
+pub static RECONNECT_EVENT: &str = "reconnect";
+
+pub trait Emitter: Send + Sync {
+    fn emit<T: Clone + 'static + Debug>(&mut self, event: &'static str, data: T) -> ();
+
+    fn on(&mut self, event: &'static str, callback: impl Handle + 'static) -> ();
+
+    fn off(&mut self, event: &'static str, callback: &(impl Handle + 'static)) -> ();
+}
+
 #[async_trait]
-pub trait Conn: Send + Sync {
-    fn get_address(&self) -> String;
-    fn clone_box(&self) -> Box<dyn Conn>;
+pub trait ConnectionInterface: Send + Sync {
     async fn connect(&mut self) -> Result<bool, ConnectError>;
     async fn disconnect(&mut self) -> Result<bool, ConnectError>;
     async fn send(&mut self, data: &[u8]) -> Result<bool, ConnectError>;
     async fn receive(&mut self) -> Result<Vec<u8>, ()>;
+}
+
+pub trait ConnectionBaseInterface {
+    fn get_address(&self) -> String;
 }
 
 pub trait ConnNew {
@@ -108,35 +124,6 @@ pub trait ConnNew {
 }
 
 pub trait ConnectionTrait: ConnNew + Sync + Send + Clone {}
-
-pub struct Connection(Box<dyn Conn>);
-
-impl Clone for Connection {
-    fn clone(&self) -> Self {
-        Connection(self.0.clone_box())
-    }
-}
-
-unsafe impl Sync for Connection {}
-unsafe impl Send for Connection {}
-
-impl Connection {
-    pub fn get_address(&self) -> String {
-        return self.0.get_address();
-    }
-    pub async fn connect(&mut self) -> Result<bool, ConnectError> {
-        return self.0.connect().await;
-    }
-    pub async fn disconnect(&mut self) -> Result<bool, ConnectError> {
-        return self.0.disconnect().await;
-    }
-    pub async fn send(&mut self, data: &[u8]) -> Result<bool, ConnectError> {
-        return self.0.send(data).await;
-    }
-    pub async fn receive(&mut self) -> Result<Vec<u8>, ()> {
-        return self.0.receive().await;
-    }
-}
 
 pub enum ConnBuilder {
     TCP(ConnBuilderConfig),
@@ -153,11 +140,10 @@ impl ConnBuilder {
         }
     }
 
-    pub fn build(self) -> Connection {
+    pub fn build(self) -> impl ConnectionInterface + Emitter + Clone + ConnectionBaseInterface {
         match self {
-            ConnBuilder::TCP(config) => Connection(Box::new(InnerTcpConn::new(config))),
-            ConnBuilder::UDP(config) => Connection(Box::new(InnerUdpConn::new(config))),
-            ConnBuilder::WEBSOCKET(config) => Connection(Box::new(InnerWebsocket::new(config))),
+            ConnBuilder::WEBSOCKET(config) => InnerWebsocket::new(config),
+            _ => panic!("not support"),
         }
     }
 }
@@ -173,16 +159,13 @@ mod tests {
             port: 9673,
             heartbeat_time: Some(HEARTBEAT_INTERVAL),
             protocol: Protocol::WEBSOCKET,
-            error_callback: Box::new(|err: ConnectError| {
-                println!("ERR: {}", err);
-            }),
         };
 
         let mut conn = ConnBuilder::new(connect_opt).build();
+
         conn.connect().await.unwrap();
+        // conn.send(data.as_bytes()).await.unwrap();
         loop {
-            // tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            println!("send");
             match conn.receive().await {
                 Ok(_) => {
                     println!("receive");
@@ -195,17 +178,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn it_test_kind_of_connect() {
-        // let connect_opt = ConnBuilderConfig {
-        //     host: "127.0.0.1".to_string(),
-        //     port: 9673,
-        //     protocol: Protocol::WEBSOCKET,
-        //     error_callback: Box::new(|err: ConnectError| {
-        //         println!("ERR: {}", err);
-        //     }),
-        // };
+    async fn it_test_event() {
+        let connect_opt = ConnBuilderConfig {
+            host: "127.0.0.1".to_string(),
+            port: 9673,
+            heartbeat_time: Some(HEARTBEAT_INTERVAL),
+            protocol: Protocol::WEBSOCKET,
+        };
 
-        // let mut conn = ConnBuilder::new(connect_opt).build();
-        // conn.connect().await;
+        let mut conn = ConnBuilder::new(connect_opt).build();
+
+        let handle_connecting = EventHandler::new(|data: &str| {
+            println!("event connecting: {}", data);
+        });
+
+        let handle_connected = EventHandler::new(|data: &str| {
+            println!("event connected: {}", data);
+        });
+
+        let handle_close = EventHandler::new(|data: String| {
+            println!("event close: {}", data);
+        });
+
+        let handle_disconnect = EventHandler::new(|data: &str| {
+            println!("event disconnect: {}", data);
+        });
+
+        let handle_error = EventHandler::new(|data: String| {
+            println!("event error: {}", data);
+        });
+
+        let handle_test_message = EventHandler::new(|data: String| {
+            println!("event message: {}", data);
+        });
+
+        let handle_binary_message = EventHandler::new(|data: Vec<u8>| {
+            println!("event binary message: {:?}", data);
+        });
+
+        let handle_reconnect = EventHandler::new(|data: String| {
+            println!("event reconnect: {}", data);
+        });
+
+        conn.on(CONNECTING_EVENT, handle_connecting.clone());
+        conn.on(CONNECTED_EVENT, handle_connected.clone());
+        conn.on(CLOSE_EVENT, handle_close.clone());
+        conn.on(DISCONNECT_EVENT, handle_disconnect.clone());
+        conn.on(ERROR_EVENT, handle_error.clone());
+        conn.on(MESSAGE_EVENT, handle_test_message.clone());
+        conn.on(MESSAGE_EVENT, handle_binary_message.clone());
+        conn.on(RECONNECT_EVENT, handle_reconnect.clone());
+
+        conn.connect().await.unwrap();
+
+        loop {
+            println!("send");
+            match conn.receive().await {
+                Ok(_) => {
+                    println!("receive");
+                },
+                Err(_) => {
+                    println!("receive err");
+                },
+            }
+        }
     }
+
 }
