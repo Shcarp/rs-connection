@@ -232,7 +232,6 @@ mod tests {
         conn.connect().await.unwrap();
 
         loop {
-            println!("send");
             match conn.receive().await {
                 Ok(_) => {
                     println!("receive");

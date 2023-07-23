@@ -921,6 +921,8 @@ dependencies = [
 [[package]]
 name = "rs-event-emitter"
 version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee53922fc5499676fd74ed7844f01db87e8bb2da2e783fafb5a82f6c7f182037"
 dependencies = [
  "dashmap",
 ]
