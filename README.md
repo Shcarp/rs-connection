@@ -28,7 +28,7 @@ Add the following line to your `Cargo.toml` file:
 
 ```toml
 [dependencies]
-rs-connections = "0.2.0"
+rs-connections = "0.2.1"
 ```
 
 ## Usage
