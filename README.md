@@ -132,7 +132,7 @@ pub static RECONNECT_EVENT: &str = "reconnect";
     -   emit parameter: `String`
 -   `message`: Emitted when a message is received.
     -   listen parameter:
-        -   `String` Test message
+        -   `String` Text message
         -   `Vec<u8>` Binary message
     -   emit parameter: `&str`
         -   `String` Test message
@@ -178,7 +178,7 @@ async fn main() {
         println!("event error: {}", data);
     });
 
-    let handle_test_message = EventHandler::new(|data: String| {
+    let handle_text_message = EventHandler::new(|data: String| {
         println!("event message: {}", data);
     });
     let handle_binary_message = EventHandler::new(|data: Vec<u8>| {
@@ -199,7 +199,7 @@ async fn main() {
     // add error event listener
     conn.on(ERROR_EVENT, handle_error.clone());
     // add message event listener
-    conn.on(MESSAGE_EVENT, handle_test_message.clone());
+    conn.on(MESSAGE_EVENT, handle_text_message.clone());
     // add binary message event listener
     conn.on(MESSAGE_EVENT, handle_binary_message.clone());
 
