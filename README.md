@@ -96,6 +96,14 @@ async fn main() {
 
     // Remove the event
     conn.off("my_event", my_event);
+
+    // more parameters, use tuple
+    conn.on("my_event", |data: (&str, &str)| {
+        println!("event connecting: {}", data.0);
+        println!("event connecting: {}", data.1);
+    })
+    
+    conn.emit("my_event", ("hello", "world"));
 }
 
 ```
