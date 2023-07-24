@@ -906,7 +906,7 @@ dependencies = [
 
 [[package]]
 name = "rs-connections"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "async-trait",
  "chrono",

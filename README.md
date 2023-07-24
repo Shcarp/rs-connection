@@ -28,7 +28,7 @@ Add the following line to your `Cargo.toml` file:
 
 ```toml
 [dependencies]
-rs-connections = "0.2.1"
+rs-connections = "0.2.2"
 ```
 
 ## Usage
@@ -102,7 +102,7 @@ async fn main() {
         println!("event connecting: {}", data.0);
         println!("event connecting: {}", data.1);
     })
-    
+
     conn.emit("my_event", ("hello", "world"));
 }
 
