@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rs_connections::{
     ConnBuilder, ConnBuilderConfig, ConnectionInterface, Emitter, EventHandler, Protocol,
     CONNECTED_EVENT,
@@ -19,7 +21,7 @@ async fn main() {
         println!("event connecting: {}", data);
     });
 
-    conn.on(CONNECTED_EVENT, handle_connected.clone());
+    conn.on(CONNECTED_EVENT, Arc::new(handle_connected.clone()));
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;

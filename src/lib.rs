@@ -2,7 +2,7 @@ mod error;
 mod inner_tcp;
 mod inner_udp;
 mod inner_websocket;
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc, any::Any};
 use async_trait::async_trait;
 pub use rs_event_emitter::{EventHandler, Handle};
 pub use error::ConnectError;
@@ -59,7 +59,6 @@ pub struct ConnBuilderConfig {
     pub port: u16,
     pub protocol: Protocol,
     pub heartbeat_time: Option<u64>,
-    // pub error_callback: Box<dyn FnMut(ConnectError) + Send + Sync>,
 }
 
 impl Default for ConnBuilderConfig  {
@@ -69,9 +68,6 @@ impl Default for ConnBuilderConfig  {
             port: 9673,
             protocol: Protocol::WEBSOCKET,
             heartbeat_time: Some(HEARTBEAT_INTERVAL),
-            // error_callback: Box::new(|err: ConnectError| {
-            //     println!("ERR: {}", err);
-            // })
         }
     }
 }
@@ -100,11 +96,11 @@ pub static MESSAGE_EVENT: &str = "message";
 pub static RECONNECT_EVENT: &str = "reconnect";
 
 pub trait Emitter: Send + Sync {
-    fn emit<T: Clone + 'static + Debug>(&mut self, event: &'static str, data: T) -> ();
+    fn emit(&mut self, event: &'static str, data: Box<dyn Any>) -> ();
 
-    fn on(&mut self, event: &'static str, callback: impl Handle + 'static) -> ();
+    fn on(&mut self, event: &'static str, callback: Arc<dyn Handle>) -> ();
 
-    fn off(&mut self, event: &'static str, callback: &(impl Handle + 'static)) -> ();
+    fn off(&mut self, event: &'static str, callback: Arc<dyn Handle>) -> ();
 }
 
 #[async_trait]
@@ -204,7 +200,7 @@ mod tests {
             println!("event disconnect: {}", data);
         });
 
-        let handle_error = EventHandler::new(|data: String| {
+        let handle_error = EventHandler::new(|data: ConnectError| {
             println!("event error: {}", data);
         });
 
@@ -220,14 +216,14 @@ mod tests {
             println!("event reconnect: {}", data);
         });
 
-        conn.on(CONNECTING_EVENT, handle_connecting.clone());
-        conn.on(CONNECTED_EVENT, handle_connected.clone());
-        conn.on(CLOSE_EVENT, handle_close.clone());
-        conn.on(DISCONNECT_EVENT, handle_disconnect.clone());
-        conn.on(ERROR_EVENT, handle_error.clone());
-        conn.on(MESSAGE_EVENT, handle_test_message.clone());
-        conn.on(MESSAGE_EVENT, handle_binary_message.clone());
-        conn.on(RECONNECT_EVENT, handle_reconnect.clone());
+        conn.on(CONNECTING_EVENT, Arc::new(handle_connecting.clone()));
+        conn.on(CONNECTED_EVENT, Arc::new(handle_connected.clone()));
+        conn.on(CLOSE_EVENT, Arc::new(handle_close.clone()));
+        conn.on(DISCONNECT_EVENT, Arc::new(handle_disconnect.clone()));
+        conn.on(ERROR_EVENT, Arc::new(handle_error.clone()));
+        conn.on(MESSAGE_EVENT, Arc::new(handle_test_message.clone()));
+        conn.on(MESSAGE_EVENT, Arc::new(handle_binary_message.clone()));
+        conn.on(RECONNECT_EVENT, Arc::new(handle_reconnect.clone()));
 
         conn.connect().await.unwrap();
 

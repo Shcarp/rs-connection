@@ -2,6 +2,7 @@
     "cSpell.words": [
         "Evented",
         "println",
-        "thiserror"
+        "thiserror",
+        "unpark"
     ]
 }

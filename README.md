@@ -28,7 +28,7 @@ Add the following line to your `Cargo.toml` file:
 
 ```toml
 [dependencies]
-rs-connections = "0.2.2"
+rs-connections = "0.2.3"
 ```
 
 ## Usage
@@ -136,8 +136,8 @@ pub static RECONNECT_EVENT: &str = "reconnect";
     -   listen parameter: `String`
     -   emit parameter: `String`
 -   `error`: Emitted when an error occurs.
-    -   listen parameter: `String`
-    -   emit parameter: `String`
+    -   listen parameter: `ConnectError`
+    -   emit parameter: `ConnectError`
 -   `message`: Emitted when a message is received.
     -   listen parameter:
         -   `String` Text message
@@ -182,7 +182,7 @@ async fn main() {
         println!("event close: {}", data);
     });
 
-    let handle_error = EventHandler::new(|data: String| {
+    let handle_error = EventHandler::new(|data: ConnectError| {
         println!("event error: {}", data);
     });
 

@@ -1,11 +1,12 @@
 use crate::{
     error::ConnectError, ConnBuilderConfig, ConnNew, ConnectionBaseInterface, ConnectionInterface,
     ConnectionStatus, Emitter, Protocol, CLOSE_EVENT, CONNECTED_EVENT, CONNECTING_EVENT,
-    DISCONNECT_EVENT, ERROR_EVENT, HEARTBEAT_INTERVAL, RECONNECT_EVENT, MESSAGE_EVENT,
+    DISCONNECT_EVENT, ERROR_EVENT, HEARTBEAT_INTERVAL, MESSAGE_EVENT, RECONNECT_EVENT,
 };
 use async_trait::async_trait;
 use log::{error, info};
 use std::{
+    any::Any,
     fmt::Debug,
     net::TcpStream,
     sync::{atomic::AtomicU64, Arc},
@@ -39,7 +40,7 @@ pub struct InnerWebsocket {
     last_heartbeat: Arc<AtomicU64>,
     recv_sender: Sender<Vec<u8>>,
     recv_receiver: Arc<Mutex<Receiver<Vec<u8>>>>,
-    conn_task: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
+    conn_task: Arc<RwLock<Vec<std::thread::JoinHandle<()>>>>,
 }
 
 unsafe impl Send for InnerWebsocket {}
@@ -76,11 +77,7 @@ impl Debug for InnerWebsocket {
 
 impl Drop for InnerWebsocket {
     fn drop(&mut self) {
-        let mut tasks = self.conn_task.write().unwrap();
-        tasks.iter().for_each(|task| {
-            task.abort();
-        });
-        tasks.clear();
+        let tasks = self.conn_task.write().unwrap();
         drop(tasks);
     }
 }
@@ -91,7 +88,7 @@ impl InnerWebsocket {
     }
 
     async fn error_callback(&mut self, error: ConnectError) {
-        self.emit(ERROR_EVENT, format!("{}", error));
+        self.emit(ERROR_EVENT, Box::new(error));
     }
 
     fn do_connect(&mut self) -> Result<WebsocketClient<TcpStream>, ConnectError> {
@@ -121,49 +118,58 @@ impl InnerWebsocket {
         let heartbeat = self.writer.clone().unwrap();
 
         let mut start_time = chrono::Utc::now().timestamp_millis() as u64;
-
-        let heartbeat_task = tokio::spawn(async move {
-            loop {
-                let now = chrono::Utc::now().timestamp_millis() as u64;
-                if now - start_time >= this.heartbeat_time
-                    && this.state.load(Ordering::Relaxed)
-                        == ConnectionStatus::ConnectStateConnected as u8
-                {
-                    let mut write = heartbeat.lock().await;
-                    match write.send_message(&websocket::Message::ping(PING)) {
-                        Ok(_) => {
-                            log::info!("ping");
-                        }
-                        Err(_error) => {
-                            drop(write);
-                            this.error_help(ConnectError::SendError(String::from("ping error")))
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                loop {
+                    let now = chrono::Utc::now().timestamp_millis() as u64;
+                    if now - start_time >= this.heartbeat_time {
+                        let mut write = heartbeat.lock().await;
+                        match write.send_message(&websocket::Message::ping(PING)) {
+                            Ok(_) => {
+                                log::info!("ping");
+                            }
+                            Err(_error) => {
+                                drop(write);
+                                this.error_help(ConnectError::SendError(String::from(
+                                    "ping error",
+                                )))
                                 .await;
-                        }
-                    };
-                    start_time = chrono::Utc::now().timestamp_millis() as u64;
+                            }
+                        };
+                        start_time = chrono::Utc::now().timestamp_millis() as u64;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(
+                        this.heartbeat_time / 2 / 1000,
+                    ))
+                    .await;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            }
+            });
         });
-        self.conn_task.write().unwrap().push(heartbeat_task);
+        self.conn_task.write().unwrap().push(handle);
     }
 
     // 检测最后一次收到信息时间差
     fn check_close(&mut self) {
         let mut this = self.clone();
         let last_time = self.last_heartbeat.clone();
-        let check_task = tokio::spawn(async move {
-            loop {
-                let now = chrono::Utc::now().timestamp_millis() as u64;
-                if now - last_time.load(Ordering::Relaxed) >= this.heartbeat_time + 1000 {
-                    // 重连
-                    this.error_help(ConnectError::ConnectionTimeout).await;
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                loop {
+                    let now = chrono::Utc::now().timestamp_millis() as u64;
+                    if now - last_time.load(Ordering::Relaxed) >= this.heartbeat_time + 1000 {
+                        // 重连
+                        this.error_help(ConnectError::ConnectionTimeout).await;
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(
+                        this.heartbeat_time / 1000,
+                    ))
+                    .await;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-            }
+            });
         });
-
-        self.conn_task.write().unwrap().push(check_task);
+        self.conn_task.write().unwrap().push(handle);
     }
 
     // 开始接收信息
@@ -172,7 +178,7 @@ impl InnerWebsocket {
         let reader = self.reader.clone().unwrap();
         let recv_sender = self.recv_sender.clone();
 
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             // 创建一个tokio 运行时
             let rt = tokio::runtime::Runtime::new().unwrap();
             let task = async {
@@ -186,6 +192,7 @@ impl InnerWebsocket {
                             );
                             match message {
                                 OwnedMessage::Ping(payload) => {
+                                    println!("recv ping");
                                     match this
                                         .writer
                                         .clone()
@@ -204,10 +211,11 @@ impl InnerWebsocket {
                                     };
                                 }
                                 OwnedMessage::Pong(_) => {
+                                    info!("recv pong");
                                     continue;
                                 }
                                 OwnedMessage::Text(text) => {
-                                    this.emit(MESSAGE_EVENT, text.clone());
+                                    this.emit(MESSAGE_EVENT, Box::new(text.clone()));
                                     match recv_sender.send(text.into_bytes()).await {
                                         Ok(_) => continue,
                                         Err(error) => {
@@ -220,7 +228,7 @@ impl InnerWebsocket {
                                     }
                                 }
                                 OwnedMessage::Binary(binary) => {
-                                    this.emit(MESSAGE_EVENT, binary.clone());
+                                    this.emit(MESSAGE_EVENT, Box::new(binary.clone()));
                                     match recv_sender.send(binary).await {
                                         Ok(_) => continue,
                                         Err(error) => {
@@ -238,12 +246,14 @@ impl InnerWebsocket {
                                             error.reason,
                                         ))
                                         .await;
+                                        println!("close error_help")
                                     }
                                     None => {
                                         this.error_help(ConnectError::ConnectionClosed(
                                             "close".to_string(),
                                         ))
                                         .await;
+                                        println!("close error_help")
                                     }
                                 },
                             }
@@ -252,13 +262,15 @@ impl InnerWebsocket {
                             drop(recv);
                             this.error_help(ConnectError::ConnectionClosed("close".to_string()))
                                 .await;
-                            break;
+                            println!("close error_help 12111");
+                            // break;
                         }
                     };
                 }
             };
             rt.block_on(task);
         });
+        self.conn_task.write().unwrap().push(handle);
     }
 
     async fn reconnect(&mut self) -> Result<(), ConnectError> {
@@ -268,13 +280,18 @@ impl InnerWebsocket {
             let (reader, writer) = match self.do_connect() {
                 Ok(conn) => conn.split().or_else(|error| {
                     info!("reconnect error: {:?}", error);
-                    self.emit(CLOSE_EVENT, format!("reconnect error: {:?}", error));
+                    self.emit(
+                        CLOSE_EVENT,
+                        Box::new(format!("reconnect error: {:?}", error)),
+                    );
                     Err(error)
+                }).or_else(|error| {
+                    Err(ConnectError::Connection(error.to_string()))
                 })?,
                 Err(_error) => {
                     let reconnect_info = format!("reconnect error: {:?}", _error);
                     info!("{}", reconnect_info.clone());
-                    self.emit(RECONNECT_EVENT, reconnect_info);
+                    self.emit(RECONNECT_EVENT, Box::new(reconnect_info));
                     std::thread::sleep(std::time::Duration::from_secs(3));
                     count += 1;
                     if count >= 100 {
@@ -340,7 +357,7 @@ impl InnerWebsocket {
             match this.reconnect().await {
                 Ok(_) => {
                     info!("reconnect success");
-                    self.emit(CONNECTED_EVENT, "connected");
+                    self.emit(CONNECTED_EVENT, Box::new("reconnect success"));
                 }
                 Err(_) => {
                     this.close(error).await;
@@ -379,7 +396,7 @@ impl ConnNew for InnerWebsocket {
 #[async_trait]
 impl ConnectionInterface for InnerWebsocket {
     async fn connect(&mut self) -> Result<bool, ConnectError> {
-        self.emit(CONNECTING_EVENT, "connecting");
+        self.emit(CONNECTING_EVENT, Box::new("connecting"));
         self.state.store(
             ConnectionStatus::ConnectStateConnecting.into(),
             Ordering::Relaxed,
@@ -403,7 +420,7 @@ impl ConnectionInterface for InnerWebsocket {
         self.check_close();
         self.start_recv();
 
-        self.emit(CONNECTED_EVENT, "connected");
+        self.emit(CONNECTED_EVENT, Box::new("connected"));
 
         self.state.swap(
             ConnectionStatus::ConnectStateConnected.into(),
@@ -413,16 +430,13 @@ impl ConnectionInterface for InnerWebsocket {
     }
 
     async fn disconnect(&mut self) -> Result<bool, ConnectError> {
-        self.emit(DISCONNECT_EVENT, "CONNECT CLOSE");
+        self.emit(DISCONNECT_EVENT, Box::new("disconnect"));
         self.state.store(
             ConnectionStatus::ConnectStateClosing.into(),
             Ordering::Relaxed,
         );
         let mut send = self.writer.as_mut().unwrap().lock().await;
         let mut tasks = self.conn_task.write().unwrap();
-        tasks.iter().for_each(|task| {
-            task.abort();
-        });
         tasks.clear();
         drop(tasks);
         match send.send_message(&websocket::Message::close()) {
@@ -431,7 +445,6 @@ impl ConnectionInterface for InnerWebsocket {
                     ConnectionStatus::ConnectStateClosed.into(),
                     Ordering::Relaxed,
                 );
-
                 Ok(true)
             }
             Err(err) => {
@@ -471,15 +484,15 @@ impl ConnectionInterface for InnerWebsocket {
 }
 
 impl Emitter for InnerWebsocket {
-    fn emit<T: Clone + 'static + Debug>(&mut self, event: &'static str, data: T) -> () {
+    fn emit(&mut self, event: &'static str, data: Box<dyn Any>) -> () {
         self.emitter.emit(event, data);
     }
 
-    fn on(&mut self, event: &'static str, callback: impl Handle + 'static) -> () {
+    fn on(&mut self, event: &'static str, callback: Arc<dyn Handle>) -> () {
         self.emitter.on(event, callback);
     }
 
-    fn off(&mut self, event: &'static str, callback: &(impl Handle + 'static)) -> () {
+    fn off(&mut self, event: &'static str, callback: Arc<dyn Handle>) -> () {
         self.emitter.off(event, callback);
     }
 }

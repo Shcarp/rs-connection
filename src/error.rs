@@ -1,11 +1,11 @@
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum ConnectError {
     #[error("Not connected")]
     Disconnect(String),
     #[error("Connection error")]
-    Connection(#[from] std::io::Error),
+    Connection(String),
     #[error("Send error {0}")]
     SendError(String),
     #[error("Recv error {0}")]
