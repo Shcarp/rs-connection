@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use rs_connections::{
-    ConnBuilder, ConnBuilderConfig, ConnectionInterface, Emitter, EventHandler, Protocol,
-    CONNECTED_EVENT,
-};
+use rs_connections::{ConnBuilderConfig, Protocol, ConnBuilder, ConnectionInterface, CONNECTED_EVENT, Emitter};
+use rs_event_emitter::EventHandler;
 
 #[tokio::main]
 async fn main() {

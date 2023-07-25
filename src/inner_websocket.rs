@@ -1,8 +1,3 @@
-use crate::{
-    error::ConnectError, ConnBuilderConfig, ConnNew, ConnectionBaseInterface, ConnectionInterface,
-    ConnectionStatus, Emitter, Protocol, CLOSE_EVENT, CONNECTED_EVENT, CONNECTING_EVENT,
-    DISCONNECT_EVENT, ERROR_EVENT, HEARTBEAT_INTERVAL, MESSAGE_EVENT, RECONNECT_EVENT,
-};
 use async_trait::async_trait;
 use log::{error, info};
 use std::{
@@ -25,6 +20,8 @@ use websocket::{
 };
 
 use rs_event_emitter::{EventEmitter, Handle};
+
+use crate::{builder::{ConnNew, ConnBuilderConfig}, base::{ConnectionInterface, Emitter, ConnectionBaseInterface, DISCONNECT_EVENT, ConnectionStatus, CONNECTING_EVENT, CONNECTED_EVENT, Protocol, ERROR_EVENT, MESSAGE_EVENT, CLOSE_EVENT, RECONNECT_EVENT}, ConnectError, conn::ConnAssemble, HEARTBEAT_INTERVAL};
 
 const PING: &[u8] = b"ping";
 
@@ -502,3 +499,6 @@ impl ConnectionBaseInterface for InnerWebsocket {
         return format!("{}:{}", self.ip, self.port);
     }
 }
+
+
+impl ConnAssemble for InnerWebsocket {}
