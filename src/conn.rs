@@ -3,11 +3,22 @@ use std::{any::Any, sync::Arc};
 use async_trait::async_trait;
 use rs_event_emitter::Handle;
 
-use crate::{base::{ConnectionInterface, Emitter, ConnectionBaseInterface}, ConnectError};
+use crate::{
+    base::{ConnectionBaseInterface, ConnectionInterface, Emitter},
+    ConnectError,
+};
 
-pub trait ConnAssemble: ConnectionInterface + Emitter + ConnectionBaseInterface {}
+pub trait ConnAssemble: ConnectionInterface + Emitter + ConnectionBaseInterface {
+    fn clone_box(&self) -> Box<dyn ConnAssemble>;
+}
 
-pub struct Conn (Box<dyn ConnAssemble>);
+pub struct Conn(Box<dyn ConnAssemble>);
+
+impl Clone for Conn {
+    fn clone(&self) -> Self {
+        Self(self.0.clone_box())
+    }
+}
 
 impl Conn {
     pub fn new<T: ConnAssemble + 'static>(conn: T) -> Self {

@@ -28,7 +28,7 @@ Add the following line to your `Cargo.toml` file:
 
 ```toml
 [dependencies]
-rs-connections = "0.2.4"
+rs-connections = "0.2.5"
 ```
 
 ## Usage
@@ -85,9 +85,9 @@ async fn main() {
     let mut conn = ConnBuilder::new(connect_opt).build();
     conn.connect().await.unwrap();
 
-    let my_event = EventHandler::new(|data: &str| {
+    let my_event = EventHandler::new(Box::new(|data: &str| {
         println!("event connecting: {}", data);
-    });
+    }));
 
     conn.on("my_event", my_event.clone());
     // Emit the event
@@ -162,36 +162,36 @@ async fn main() {
 
     let mut conn = ConnBuilder::new(connect_opt).build();
 
-    let handle_connecting = EventHandler::new(|data: &str| {
+    let handle_connecting = EventHandler::new(Box::new(|data: &str| {
             println!("event connecting: {}", data);
-    });
+    }));
 
-    let handle_connected = EventHandler::new(|data: &str| {
+    let handle_connected = EventHandler::new(Box::new(|data: &str| {
         println!("event connected: {}", data);
-    });
+    }));
 
-    let handle_disconnect = EventHandler::new(|data: &str| {
+    let handle_disconnect = EventHandler::new(Box::new(|data: &str| {
         println!("event disconnect: {}", data);
-    });
+    }));
 
-    let handle_reconnect = EventHandler::new(|data: String| {
+    let handle_reconnect = EventHandler::new(Box::new(|data: String| {
         println!("event reconnect: {}", data);
-    });
+    }));
 
-    let handle_close = EventHandler::new(|data: String| {
+    let handle_close = EventHandler::new(Box::new(|data: String| {
         println!("event close: {}", data);
-    });
+    }));
 
-    let handle_error = EventHandler::new(|data: ConnectError| {
+    let handle_error = EventHandler::new(Box::new(|data: ConnectError| {
         println!("event error: {}", data);
-    });
+    }));
 
-    let handle_text_message = EventHandler::new(|data: String| {
+    let handle_text_message = EventHandler::new(Box::new(|data: String| {
         println!("event message: {}", data);
-    });
-    let handle_binary_message = EventHandler::new(|data: Vec<u8>| {
+    }));
+    let handle_binary_message = EventHandler::new(Box::new(|data: Vec<u8>| {
         println!("event binary message: {:?}", data);
-    });
+    }));
     // Add event listener
 
     // add connecting event listener

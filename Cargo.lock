@@ -953,7 +953,7 @@ dependencies = [
 
 [[package]]
 name = "rs-connections"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "async-trait",
  "chrono",
@@ -967,9 +967,9 @@ dependencies = [
 
 [[package]]
 name = "rs-event-emitter"
-version = "0.0.4"
+version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8f6637346d1c96e56ea95784df9dd7dd98c4b164a2fa30dead527cc9ff9dc1b"
+checksum = "535b2d992e477cd6c8b9e15971d33f6968e56ea753061d04de17187bdbb341b2"
 dependencies = [
  "dashmap",
  "uuid",

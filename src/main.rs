@@ -15,9 +15,9 @@ async fn main() {
     let mut conn = ConnBuilder::new(connect_opt).build();
     conn.connect().await.unwrap();
 
-    let handle_connected = EventHandler::new(|data: &str| {
+    let handle_connected = EventHandler::new(Box::new(|data: &str| {
         println!("event connecting: {}", data);
-    });
+    }));
 
     conn.on(CONNECTED_EVENT, Arc::new(handle_connected.clone()));
 
